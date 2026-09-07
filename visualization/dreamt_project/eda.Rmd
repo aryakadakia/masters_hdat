@@ -1,0 +1,344 @@
+---
+title: "viz_kids_eda"
+author: "Arya Kadakia"
+date: "2026-07-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Set defaults
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+ source("setup.R")
+
+theme_set(theme_minimal(base_size = 12))
+```
+
+```{r structure}
+
+# --- Data structure --- #
+
+# Column names of each table
+for (tables in c("signals","events","participants","self_report")) {
+  cat("\n", tables, ":\n", sep = "")
+  print(names(get(tables)))
+}
+
+glimpse(signals)
+
+# Categorical levels for filters
+lapply(list(condition = signals$condition,
+            signal = signals$signal,
+            phase = signals$phase), unique)
+
+# Check number of participants with complete data
+cat("Complete-set participants (all 3 conditions):", length(complete_participants), "\n")
+print(complete_participants)
+```
+
+```{r demographics}
+
+# --- Cohort and demographics --- #
+
+# Number of participants with unusable demographics
+# demo %>% count(Gender) # Gender has no missing values (17 females, 19 males)
+cat("Participants missing age:", sum(is.na(demo$Age)), "\n")
+cat("Participants missing bmi:", sum(is.na(demo$bmi)), "\n")
+
+# Participant availability by condition
+participants %>%
+  distinct(subject, condition) %>%
+  ggplot(aes(condition, subject)) +
+  geom_tile(fill = "seagreen", colour = "white") +
+  labs(title = "Participant availability by condition", x = NULL, y = NULL)
+
+# Demographic distributions (participants with recorded demographics only)
+demo_with_bmi <- demo %>% filter(!is.na(bmi))
+p_age <- ggplot(demo_with_bmi, aes(Age)) +
+  geom_histogram(bins = 15, fill = "seagreen") + labs(title = "Age")
+p_sex <- ggplot(demo, aes(Gender)) +
+  geom_bar(fill = "seagreen") + labs(title = "Gender")
+p_bmi <- ggplot(demo_with_bmi, aes(bmi)) +
+  geom_histogram(bins = 15, fill = "seagreen") + labs(title = "BMI")
+p_age + p_sex + p_bmi
+
+```
+
+Cohort & availability. 36 participants; 30 completed all three conditions. Five stress-only participants (f14–f18) have no recorded demographics. Age clusters tightly around 20, gender is roughly balanced, BMI mostly 20–30. The cohort is young and fairly homogeneous.
+
+```{r missingness}
+
+# --- Missingness and completeness --- #
+
+# NA checks in the value columns of the tables
+colSums(is.na(signals))
+colSums(is.na(self_report))
+colSums(is.na(events))
+
+gg_miss_var(participants) +
+  labs(title = "Missing values per participant column")
+
+# Check placeholder strings hiding as text (e.g., "-" in demographics)
+sapply(participants, function(col) sum(col %in% c("-", "", "n/a", "NA"), na.rm = TRUE))
+
+# Which participants carry the "-" placeholders, and in which fields
+participants %>%
+  filter(if_any(everything(), ~ .x == "-")) %>%
+  distinct(subject, .keep_all = TRUE)
+
+# Sessions where a signal is completely absent
+signals %>%
+  distinct(subject, condition, signal) %>%
+  count(subject, condition) %>%
+  filter(n < 3) # fewer than the 3 expected signals, empty result = no session missing a signal
+
+# How much of each session sits inside a labelled protocol phase
+phase_cov <- signals %>%
+  group_by(subject, condition) %>%
+  summarise(frac_labelled = mean(!is.na(phase) & phase != "pre_protocol"))
+
+ggplot(phase_cov, aes(condition, frac_labelled, fill = condition)) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = cond_cols, guide = "none") +
+  labs(title = "Fraction of each session inside a labelled phase",
+       x = NULL, y = "labelled fraction")
+
+# Self-report coverage per phase
+self_report %>% count(phase)
+
+# Implausible physiological values in the analysed signals
+signals %>%
+  group_by(signal) %>%
+  summarise(min = min(value), max = max(value),
+            n_implausible = sum(
+              (signal == "HR"  & (value < 30 | value > 220)) |
+              (signal == "EDA" & (value < 0  | value > 100)) |
+              (signal == "ACC_movement" & value < 0))
+            )
+
+```
+
+Missingness & data quality. All missingness in the signal data is structural. 'part' is only set for the three split recordings, and phase/t_rel are absent for the 21% of seconds outside labelled stages. Every session has all three signals. HR, EDA and ACC contain no physiologically implausible values. The self-report table has no missing values. Coverage is complete (36 participants) for every task except stroop, which was part of the v1 protocol only (n=18). Demographic and protocol fields are missing only for participants who did not complete every condition. The five stress-only participants (f14 to f18) lack age, height, weight, and the exercise-participation fields; only their gender is recorded. S12, who completed stress and anaerobic but not aerobic, is missing only the aerobic-participation field. All such gaps are coded as "-" in the source subject-info.csv and converted to NA during setup. No physiological signal data is missing.
+
+```{r distributions}
+
+# --- Distributions --- #
+
+# Value distribution per signal and condition
+labelled_clean %>%
+  ggplot(aes(condition, value, fill = condition)) +
+  geom_violin() +
+  scale_fill_manual(values = cond_cols, guide = "none") +
+  facet_wrap(~ signal, scales = "free_y") +
+  labs(title = "Signal value distributions by condition",
+       x = NULL, y = NULL)
+
+# Self-report rating distribution
+self_report %>%
+  ggplot(aes(rating)) +
+  geom_bar(fill = "orange") +
+  labs(title = "Self-reported stress ratings", x = "rating")
+
+# Stage duration distribution by phase
+events %>%
+  filter(phase != "pre_protocol") %>%
+  ggplot(aes(duration, phase, fill = condition)) +
+  geom_boxplot() +
+  scale_fill_manual(values = cond_cols) +
+  facet_grid(condition ~ version, scales = "free", space = "free_y") +
+  labs(title = "Stage durations by phase, condition and protocol version",
+       x = "duration (s)", y = NULL)
+
+```
+
+Signal distributions. HR separates the conditions but not cleanly. Stress sits lower (median 77) while aerobic (96) and anaerobic (92) overlap heavily. EDA and ACC are strongly zero-skewed (most seconds are low). Self-reported stress ratings span the full 0–10 range, centred around 3–5.
+
+Stage durations. Tasks and sprints have narrow, fixed durations, while rest periods vary widely. The two protocol versions (v1/v2) differ structurally. Version-specific analyses should filter to v1 as its a complete protocool.
+
+```{r relationships}
+
+# --- Relationships --- #
+
+# HR by condition
+labelled_clean %>%
+  filter(signal == "HR") %>%
+  group_by(condition) %>%
+  summarise(p10 = quantile(value, 0.1),
+            median = median(value),
+            p90 = quantile(value, 0.9))
+
+# Session-level HR vs (mean) movement per condition
+labelled_clean %>%
+  filter(signal %in% c("HR", "ACC_movement")) %>%
+  group_by(condition, signal) %>%
+  summarise(mean_value = mean(value)) %>%
+  pivot_wider(names_from = signal, values_from = mean_value)
+
+# Peak HR and mean EDA by sprint number (anaerobic)
+sprints <- c("sprint_1", "sprint_2", "sprint_3", "sprint_4")
+labelled_clean %>%
+  filter(condition == "ANAEROBIC", signal %in% c("HR", "EDA"), phase %in% sprints) %>%
+  group_by(phase, signal) %>%
+  summarise(mean_value = mean(value)) %>%
+  pivot_wider(names_from = signal, values_from = mean_value)
+
+
+# --- Does EDA rise at the moment a stress task (TMCT) begins? --- #
+
+# EDA readings during the TMCT tasks for participants who did all three conditions
+tmct_eda <- labelled_clean %>%
+  filter(condition == "STRESS", signal == "EDA",
+         phase == "tmct", subject %in% complete_participants,
+         t_rel >= 0, t_rel <= 180) # first 180 seconds
+
+# Each participant's mean resting EDA at baseline
+baseline_eda <- labelled_clean %>%
+  filter(condition == "STRESS", signal == "EDA", phase == "baseline") %>%
+  group_by(subject) %>%
+  summarise(baseline = mean(value))
+
+# How much resting EDA varies between people (~200)
+summary(baseline_eda$baseline)
+max(baseline_eda$baseline) / min(baseline_eda$baseline)
+
+# Each person's resting EDA subtracted from their TMCT readings
+tmct_eda_corrected <- tmct_eda %>%
+  left_join(baseline_eda, by = "subject") %>%
+  mutate(value_corrected = value - baseline)
+
+# Median and middle 50% of EDA at each second (before and after baseline correction)
+tmct_median_raw <- tmct_eda %>%
+  group_by(t_rel) %>%
+  summarise(median_eda = median(value),
+            lower = quantile(value, 0.25),
+            upper = quantile(value, 0.75))
+
+tmct_median_corrected <- tmct_eda_corrected %>%
+  group_by(t_rel) %>%
+  summarise(median_eda = median(value_corrected),
+            lower = quantile(value_corrected, 0.25),
+            upper = quantile(value_corrected, 0.75))
+
+# grey lines = individuals, shaded band = middle 50%, solid line = median
+plot_raw <- ggplot() +
+  geom_line(data = tmct_eda, aes(t_rel, value, group = subject),
+            colour = "grey80", linewidth = 0.3) +
+  geom_ribbon(data = tmct_median_raw, aes(t_rel, ymin = lower, ymax = upper),
+              fill = "orange", alpha = 0.25) +
+  geom_line(data = tmct_median_raw, aes(t_rel, median_eda),
+            colour = "orange", linewidth = 1) +
+  labs(title = "Raw EDA", x = "seconds since task start", y = "EDA (uS)")
+
+plot_corrected <- ggplot() +
+  geom_line(data = tmct_eda_corrected, aes(t_rel, value_corrected, group = subject),
+            colour = "grey80", linewidth = 0.3) +
+  geom_ribbon(data = tmct_median_corrected, aes(t_rel, ymin = lower, ymax = upper),
+              fill = "steelblue", alpha = 0.25) +
+  geom_line(data = tmct_median_corrected, aes(t_rel, median_eda),
+            colour = "steelblue", linewidth = 1) +
+  labs(title = "Baseline-corrected EDA", x = "seconds since task start",
+       y = "EDA − own baseline (uS)")
+
+plot_raw + plot_corrected
+
+```
+
+The EDA over time analysis shows whether skin conductance rises when a stressful task begins. However, the median EDA is flat across the first three minutes of the TMCT task. Resting EDA differs between people by a factor of over 200, so the raw plot is dominated by who each person is rather than what they are doing. Removing each person's own resting level fixes that spread, but the median still does not rise. Skin conductance therefore does not seem to spike when a stressful task begins.
+
+```{r}
+# --- Demographic subgroup exploration --- #
+
+# Peak exercise HR per participant/condition joined to demo_clean
+hr_by_demographics <- labelled_clean %>%
+  filter(signal == "HR", condition %in% c("AEROBIC", "ANAEROBIC")) %>%
+  group_by(subject, condition) %>%
+  summarise(peak_hr = max(value)) %>%
+  ungroup() %>%
+  inner_join(demo_clean, by = "subject")
+
+# Peak exercise HR by gender
+hr_by_demographics %>%
+  ggplot(aes(Gender, peak_hr, fill = Gender)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~ condition) +
+  scale_fill_manual(values = c("f" = "orange", "m" = "steelblue"), guide = "none") +
+  labs(title = "Peak exercise HR by gender", x = NULL, y = "peak HR (bpm)")
+
+# Peak exercise HR by BMI group
+hr_by_demographics %>%
+  ggplot(aes(bmi_group, peak_hr, fill = bmi_group)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~ condition) +
+  scale_fill_manual(values = c("lower BMI" = "orange", "higher BMI" = "steelblue"), guide = "none") +
+  labs(title = "Peak exercise HR by BMI group", x = NULL, y = "peak HR (bpm)")
+
+# Responder split across genders and BMI
+responders %>% inner_join(demo_clean, by = "subject") %>% count(Gender, responder)
+responders %>% inner_join(demo_clean, by = "subject") %>% count(bmi_group, responder)
+
+# Largest task-phase EDA per participant (95th percentile is robust to single spikes)
+eda_peak <- labelled_clean %>%
+  filter(condition == "STRESS", signal == "EDA", phase %in% task_phases) %>%
+  group_by(subject) %>%
+  summarise(peak_val = quantile(value, 0.95))
+
+# Peak as a percentage rise above each person's own baseline
+eda_rise <- baseline_eda %>%
+  inner_join(eda_peak, by = "subject") %>%
+  mutate(rise_pct = (peak_val - baseline) / baseline * 100) # % rather than raw µS because baseline EDA varies considerably
+
+# Mean self-reported stress per participant across the five task phases
+report_mean <- self_report %>%
+  filter(phase %in% task_phases) %>%
+  group_by(subject) %>%
+  summarise(self_report_mean = mean(rating))
+
+# Combine rise, self-report and the shared responder flag
+felt_v_measured <- eda_rise %>%
+  inner_join(report_mean, by = "subject") %>%
+  inner_join(responders, by = "subject") %>%
+  mutate(
+    high_report = self_report_mean > median(self_report_mean),
+    # split into four quadrants
+    quadrant = case_when(
+      responder  & high_report  ~ "Agreement (high-high)",
+      !responder & !high_report ~ "Agreement (low-low)",
+      responder  & !high_report ~ "Reaction, no reported feeling",
+      !responder & high_report  ~ "Reported feeling, no reaction"
+    )
+  )
+
+# Felt-vs-measured difference across genders
+felt_v_measured %>%
+  inner_join(demo_clean, by = "subject") %>%
+  group_by(Gender) %>%
+  summarise(correlation = cor(rise_pct, self_report_mean))
+
+felt_v_measured %>%
+    inner_join(demo_clean, by = "subject") %>%
+    filter(Gender == "f") %>%
+    summarise(test = list(cor.test(rise_pct, self_report_mean))) %>%
+    pull(test)
+
+felt_v_measured %>%
+    inner_join(demo_clean, by = "subject") %>%
+    filter(Gender == "f") %>%
+    ggplot(aes(self_report_mean, rise_pct)) + geom_point() +
+    labs(title = "Female participants only (n=13)")
+
+# EDA baseline by gender, BMI
+baseline_eda %>% inner_join(demo_clean, by = "subject") %>%
+  group_by(Gender) %>% summarise(median_baseline = median(baseline))
+baseline_eda %>% inner_join(demo_clean, by = "subject") %>%
+  group_by(bmi_group) %>% summarise(median_baseline = median(baseline))
+```
+
+Subgroup analyses show whether the main findings varied by gender or BMI. Peak exercise heart rate did not differ meaningfully by either. Physiological response to stress was somewhat more common in male and higher-BMI participants (responder rates of 61% and 67% versus 46% and 44%), but these differences are small relative to the group sizes. Resting skin conductance was higher in male participants (median 0.97 vs 0.40 µS) and markedly higher in higher-BMI participants (median 4.22 vs 0.39 µS).
+
+An exploratory split of the felt-versus-measured relationship suggests an inverse association in female participants (r = −0.70, p = 0.008, n = 13), where those reporting more stress tended to show smaller physiological responses.

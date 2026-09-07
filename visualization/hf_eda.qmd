@@ -1,0 +1,586 @@
+---
+title: "Zigong heart failure data set EDA"
+author: "Arya Kadakia"
+date: "July 26, 2026"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+```{r setup, include=FALSE}
+
+# Load packages
+library(readr)
+library(tidyverse)
+library(janitor)
+library(plotly)
+library(patchwork)
+library(naniar)
+
+# Set defaults
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+# Set minimal theme for plots
+theme_set(theme_minimal())
+```
+
+## Data Preparation
+
+```{r read-data}
+zigong <- readr::read_csv("../zigong/dat.csv") 
+```
+
+The data is first read using `read_csv()` from the readr package. This locates `dat.csv` in a sibling directory and loads it as a tibble called `zigong`.
+
+```{r check-data, include=FALSE}
+
+# Check data structure
+head(zigong)
+glimpse (zigong)
+str(zigong)
+
+# Check counts for each categorical variable
+zigong %>% count(gender)
+zigong %>% count(ageCat)
+zigong %>% count(`type.of.heart.failure`)
+zigong %>% count(DestinationDischarge)
+zigong %>% count(`admission.way`)
+zigong %>% count(outcome.during.hospitalization)
+
+zigong %>% count(NYHA.cardiac.function.classification)
+zigong %>% count(Killip.grade)
+zigong %>% count(admission.ward)
+zigong %>% count(occupation)
+zigong %>% count(discharge.department)
+zigong %>% count(type.II.respiratory.failure)
+zigong %>% count(consciousness)
+zigong %>% count(respiratory.support.)
+zigong %>% count(oxygen.inhalation)
+zigong %>% count(CCI.score)
+
+# Counts of relevant binary flags
+zigong %>% count(re.admission.within.28.days)
+zigong %>% count(re.admission.within.6.months)
+zigong %>% count(diabetes)
+zigong %>% count(moderate.to.severe.chronic.kidney.disease)
+zigong %>% count(Chronic.obstructive.pulmonary.disease)
+
+# Check age labels
+head(zigong['ageCat'])
+```
+
+The data structure is then examined using `head()`, `glimpse()` and `str()`. Reviewing the data dictionary revealed 15 variables with multiple categories and their values are confirmed individually using `count()`. The `ageCat` variable is also inspected separately to determine if its categories need to be relabelled for clarity.
+
+```{r clean-data}
+
+# Clean column names and convert categorical variables to factors
+zigong_clean <- zigong %>%
+  clean_names() %>%
+  mutate(
+    
+    # Nominal factors
+    across(c(destination_discharge, admission_ward, admission_way, occupation,
+             discharge_department, gender, type_of_heart_failure,
+             type_ii_respiratory_failure, consciousness, respiratory_support,
+             oxygen_inhalation, outcome_during_hospitalization), factor),
+    
+    # Ordinal factors
+    nyha_cardiac_function_classification = factor(
+      nyha_cardiac_function_classification,
+      levels = c("II", "III", "IV"),
+      ordered = TRUE
+    ),
+    killip_grade = factor(
+      killip_grade,
+      levels = c("I", "II", "III", "IV"),
+      ordered = TRUE
+    ),
+    age_cat = factor(
+      age_cat,
+      levels = c("(21,29]", "(29,39]", "(39,49]", "(49,59]",
+                 "(59,69]", "(69,79]", "(79,89]", "(89,110]"),
+      labels = c("22-29", "30-39", "40-49", "50-59",
+                 "60-69", "70-79", "80-89", "90+"),
+      ordered = TRUE
+    )
+  )
+```
+
+**Data Cleaning.** The `clean_names()` function is applied to the full dataset to standardise column names by removing spaces and replacing dots with underscores. The 15 categorical variables are then converted to factors. Three of these variables (`age_cat`, `killip_grade`, and `nyha_cardiac_function_classification`) are ordinal as they have an inherent sequence, and thus, their order is preserved by setting `ordered = TRUE`. Appropriate labels are also applied for these variables. This was particularly needed for `age_cat` as it was originally labelled using left-exclusive bins (e.g., `(21,29]`), which is not very readable and has been changed to simple ranges (e.g., `22-29`) instead. The dataset also contained numerous binary variables including the comorbidity flags and the outcome/readmission indicators. These have been left as numeric rather than converted to factors because the mean of a 0/1 column gives the prevalence of a particular event directly and can be useful while screening variables. If a binary flag is needed as a labelled categorical axis in a chart, it will be converted to a factor for that plot as required.
+
+The cleaned dataset is saved as `zigong_clean`.
+
+```{r missingness-ranges, include=FALSE}
+
+# Missingness of variables used in the distribution + small-multiples charts
+zigong_clean %>%
+  summarise(across(c(brain_natriuretic_peptide, systolic_blood_pressure, cci_score,
+                     bmi, glomerular_filtration_rate, high_sensitivity_troponin),
+                   ~ mean(is.na(.x)) * 100))
+
+# Range checks to identify impossible values
+summary(zigong_clean$brain_natriuretic_peptide)
+summary(zigong_clean$systolic_blood_pressure)
+summary(zigong_clean$cci_score)
+summary(zigong_clean$bmi)    
+summary(zigong_clean$glomerular_filtration_rate)
+summary(zigong_clean$high_sensitivity_troponin)
+
+# Confirm how many impossible values exist
+zigong_clean %>% count(sbp_zero = systolic_blood_pressure == 0)
+zigong_clean %>% count(troponin_zero = high_sensitivity_troponin == 0)
+zigong_clean %>% count(bmi_implausible = bmi < 5 | bmi > 80)
+```
+
+**Missingness and range checks.** Next, the numeric variables used in the subsequent charts are checked for missingness. These variables seem to have generally low rates of missingness: \~1.7% for brain natriuretic peptide, 0% for systolic blood pressure, 0.25% for Charlson comorbidity index, 0% for body mass index, \~3.1% for glomerular filtration rate, and \~3.9% for high sensitivity troponin. The completeness of categorical variables was already confirmed earlier via the `count()` checks. Rows with missing values are dropped automatically by the plotting functions and are noted with each chart where relevant.
+
+The ranges of these numeric variables are also checked using `summary()` to identify implausible values before plotting. Three variables contain values that are not physiologically possible - BMI has a minimum of 0 and a maximum of 404, systolic blood pressure has a minimum of 0, and high-sensitivity troponin has a minimum of 0. These are likely data-entry errors or unrecorded values rather than genuine measurements and need to be accounted for during plotting. BMI will be restricted to a biologically plausible range and the zero values in systolic blood pressure and troponin will be dropped. The remaining variables show no implausible values, however, there appears to be a strong right-skew in the BNP and troponin distributions that may need to be addressed using log scales.
+
+## Distribution Plots
+
+```{r variable-description}
+
+distribution_vars <- tibble::tribble(
+  ~Variable, ~Type, ~`Reason for interest`,
+  "age_cat", "Categorical", "Heart failure is strongly age-related",
+  "gender", "Categorical", "Describes cohort composition",
+  "bmi", "Numeric", "Standard measure of body composition",
+  "type_of_heart_failure", "Categorical", "Defining clinical feature of the cohort",
+  "nyha_cardiac_function_classification", "Categorical", "Classifies chronic functional severity",
+  "killip_grade", "Categorical", "Classifies acute severity at admission",
+  "systolic_blood_pressure", "Numeric", "Routine admission vital sign",
+  "brain_natriuretic_peptide", "Numeric", "Used to diagnose heart failure (BNP >35 pg/mL)",
+  "admission_way", "Categorical", "Distinguishes emergency from planned admission",
+  "cci_score", "Numeric", "Summarises overall comorbidity burden"
+)
+
+knitr::kable(distribution_vars, caption = "**Variables selected**")
+```
+
+```{r age-plot}
+
+# Bar chart of patient counts by age group
+ggplot(zigong_clean, aes(x = age_cat)) +
+  geom_bar(fill = "darkgreen") +
+  labs(title = "Distribution of patients by age group",
+       x = "Age group (years)", y = "Number of patients")
+```
+
+**Age group.** The cohort is strongly weighted towards older patients, which aligns with the higher heart failure disease burden expected in aging populations. Patient counts steadily increase with each age group, peaking sharply at 70–79 years before declining slightly in the 80–89 bracket. Representation drops significantly for the 90+ demographic.
+
+```{r gender-plot}
+
+# Bar chart of patient counts by gender
+ggplot(zigong_clean, aes(x = gender)) +
+  geom_bar(fill = "darkgreen") +
+  labs(title = "Distribution of patients by gender",
+       x = "Gender", y = "Number of patients")
+```
+
+**Gender.** Females (n=1163) outnumber males (n=845) in the cohort, representing approximately 58% and 42% of the total patient population respectively.
+
+```{r bmi-plot}
+
+# Histogram of patient counts across BMI values
+zigong_clean %>%
+  filter(bmi >= 5 , bmi <= 80) %>%
+  ggplot(aes(x = bmi)) +
+  geom_histogram(binwidth = 1, fill = "darkgreen", colour = "white") +
+  labs(title = "Distribution of BMI",
+       x = "BMI (kg/m²)", y = "Number of patients")
+```
+
+**Body mass index (BMI).** The BMI distribution is roughly symmetric with a slight right tail. It is centred around 20–21 kg/m², with most patients falling between about 16 kg/m² and 26 kg/m². There are relatively few patients with BMI above 30 kg/m², suggesting a relatively lean patient population. Eight values were removed before plotting as they were outside a biologically plausible range.
+
+```{r hftype-plot}
+
+# Bar chart of patient counts by heart failure type
+ggplot(zigong_clean, aes(x = type_of_heart_failure)) +
+  geom_bar(fill = "darkgreen") +
+  labs(title = "Distribution of heart failure type",
+       x = "Type of heart failure", y = "Number of patients")
+```
+
+**Heart failure type.** A majority of patients present with "Both"-sided heart failure (n=1480). Left-sided heart failure is considerably less common (n=477) and right-sided heart failure accounts for only a small fraction of cases (n=51).
+
+```{r nyha-plot}
+
+# Bar chart of patient counts by NYHA class
+ggplot(zigong_clean, aes(x = nyha_cardiac_function_classification)) +
+  geom_bar(fill = "darkgreen") +
+  labs(title = "Distribution of NYHA cardiac function classification",
+       x = "NYHA class", y = "Number of patients")
+```
+
+**New York Heart Association (NYHA) class.** Class III is the most common NYHA classification (n=1039), followed by class IV (n=616) and class II (n=353). There are no patients with class I, which is expected as admitted patients tend to have more serious presentations.
+
+```{r killip-plot}
+# Bar chart of Killip grade
+ggplot(zigong_clean, aes(x = killip_grade)) +
+  geom_bar(fill = "darkgreen") +
+  labs(title = "Distribution of Killip grade",
+       x = "Killip grade", y = "Number of patients")
+```
+
+**Killip grade.** Grade II is the most common Killip grade within the cohort (n=1029), followed by grade I (n=527) and grade III (n=392). Grade IV is quite rare in this cohort (n=60).
+
+```{r sbp-plot}
+
+# Histogram of patient counts across systolic blood pressure measurements
+zigong_clean %>%
+  filter(systolic_blood_pressure > 0) %>%
+    ggplot(aes(x = systolic_blood_pressure)) +
+    geom_histogram(binwidth = 10, fill = "darkgreen", colour = "white") +
+    labs(title = "Distribution of systolic blood pressure at admission",
+         x = "Systolic blood pressure (mmHg)", y = "Number of patients")
+```
+
+**Systolic blood pressure (SBP).** The SBP distribution is approximately symmetric and centred around 120–130 mmHg. The majority of patients fall between 90 and 170 mmHg and the distribution seems to have a right tail extending to just over 210 mmHg. Three impossible zero values were removed before plotting.
+
+```{r bnp-plot}
+
+# Histogram of patient counts across BNP measurements - raw scale
+ggplot(zigong_clean, aes(x = brain_natriuretic_peptide)) +
+  geom_histogram(bins = 40, fill = "darkgreen", colour = "white") +
+  labs(title = "Distribution of BNP (raw scale)",
+       x = "BNP (pg/mL)", y = "Number of patients")
+
+# Histogram of patient counts across BNP measurements  - log10 scale
+ggplot(zigong_clean, aes(x = brain_natriuretic_peptide)) +
+  geom_histogram(bins = 40, fill = "darkgreen", colour = "white") +
+  scale_x_log10() +
+  labs(title = "Distribution of BNP (log10 scale)",
+       x = "BNP (pg/mL, log10 scale)", y = "Number of patients")
+```
+
+**Brain natriuretic peptide (BNP).** Due to a heavy right-skew, the BNP distribution is shown on both raw and log10 scales. On the raw scale, values cluster at the lower end with a long tapering right tail and a prominent spike at 5000 pg/mL. The median is around 750 pg/mL, with the middle half of patients falling roughly between 300 and 1750 pg/mL. On the other hand, the distribution appears to be more symmetric on the log10 scale, with most patients falling roughly between 200 and 3000 pg/mL and peaking around 700–1000 pg/mL. A spike remains at the right-hand end and this might indicate an upper limit of measurement. Thirty-five patients with missing BNP were excluded.
+
+```{r admission-plot}
+
+# Bar chart of patient counts by admission pathway
+ggplot(zigong_clean, aes(x = admission_way)) +
+  geom_bar(fill = "darkgreen") +
+  labs(title = "Distribution of admission pathway",
+       x = "Admission pathway", y = "Number of patients")
+
+```
+
+**Admission Pathway.** The two paths are fairly balanced with non-emergency admissions (n=1052) slightly outnumbering emergency admissions (n=956).
+
+```{r cci-plot}
+
+# Histogram of patient counts across CCI scores
+zigong_clean %>%
+  ggplot(aes(x = cci_score)) +
+  geom_histogram(binwidth = 1, boundary = -0.5,
+                 fill = "darkgreen", colour = "white") +
+  scale_x_continuous(breaks = 0:6) +
+  labs(title = "Distribution of CCI score",
+       x = "CCI score", y = "Number of patients")
+```
+
+**Charlson Comorbidity Index (CCI) score.** The CCI score distribution appears to be right-skewed with a strong concentration at the lower end of the scale. The vast majority of patients score either 1 or 2 and scores of 0 are relatively few. Patient numbers decline sharply for scores above 3 and drop to nearly zero for scores greater than 5. Five patients with missing CCI scores were excluded from this plot.
+
+## Contrasts: Small-Multiples
+
+```{r constrasts-checks, include=FALSE}
+
+# Checks for the selected small-multiples charts
+
+# Chart 1: BNP across NYHA class
+zigong_clean %>%
+  group_by(nyha_cardiac_function_classification) %>%
+  summarise(n = n(), bnp = median(brain_natriuretic_peptide, na.rm = TRUE))
+
+# Chart 2: comorbidity composition vs CCI summary by 28-day readmission
+zigong_clean %>%
+  group_by(re_admission_within_28_days) %>%
+  summarise(n = n(),
+            cci = median(cci_score, na.rm = TRUE),
+            diabetes_pct = mean(diabetes, na.rm = TRUE) * 100,
+            ckd_pct = mean(moderate_to_severe_chronic_kidney_disease, na.rm = TRUE) * 100,
+            copd_pct = mean(chronic_obstructive_pulmonary_disease, na.rm = TRUE) * 100)
+
+# Chart 3: SBP across Killip grade
+zigong_clean %>%
+  group_by(killip_grade) %>%
+  summarise(n = n(), sbp = median(systolic_blood_pressure, na.rm = TRUE))
+
+# Chart 4: BNP across BMI bands
+zigong_clean %>%
+  filter(bmi >= 5, bmi <= 80) %>%
+  mutate(bmi_band = cut(bmi, breaks = c(5, 18.5, 25, 30, 80), right = FALSE)) %>%
+  group_by(bmi_band) %>%
+  summarise(n = n(), bnp = median(brain_natriuretic_peptide, na.rm = TRUE))
+
+# Chart 5: GFR and troponin by 6-month readmission
+zigong_clean %>% count(re_admission_within_6_months)
+zigong_clean %>%
+  group_by(re_admission_within_6_months) %>%
+  summarise(n = n(),
+            gfr = median(glomerular_filtration_rate, na.rm = TRUE),
+            troponin = median(high_sensitivity_troponin, na.rm = TRUE))
+
+# Examples of excluded variable checks for each criteria
+
+# Missingness checks
+zigong_clean %>%
+  select(lvef, ea, high_sensitivity_protein, cholesterol,
+         glomerular_filtration_rate, high_sensitivity_troponin,
+         urea, albumin) %>%
+  gg_miss_var(show_pct = TRUE) +
+  labs(title = "Missingness across candidate variables",
+       y = "Percentage missing")
+
+# Separation checks
+zigong_clean %>%
+  group_by(admission_way) %>%
+  summarise(n = n(),
+            bnp = median(brain_natriuretic_peptide, na.rm = TRUE),
+            sbp = median(systolic_blood_pressure, na.rm = TRUE),
+            gfr = median(glomerular_filtration_rate, na.rm = TRUE),
+            troponin = median(high_sensitivity_troponin, na.rm = TRUE))  # flat
+
+zigong_clean %>%
+  group_by(destination_discharge) %>%
+  summarise(n = n(), los_median = median(discharge_day, na.rm = TRUE))  # uniform
+
+zigong_clean %>%
+  filter(bmi >= 5, bmi <= 80) %>%
+  mutate(bmi_band = cut(bmi, breaks = c(5, 18.5, 25, 30, 80), right = FALSE)) %>%
+  group_by(bmi_band) %>%
+  summarise(n = n(),
+            chol = median(cholesterol, na.rm = TRUE),
+            trig = median(triglyceride, na.rm = TRUE),
+            hdl = median(high_density_lipoprotein_cholesterol, na.rm = TRUE))  # no gradient
+
+# Imbalance checks
+zigong_clean %>% 
+  count(visit_times)
+
+zigong_clean %>% 
+  count(gcs)
+
+zigong_clean %>% 
+  count(death_within_6_months)
+
+# Sparsity check - age x BMI grid concentrates patients in a few cells
+zigong_binned <- zigong_clean %>%
+  filter(bmi >= 5, bmi <= 80) %>%
+  mutate(bmi_band = cut(bmi, breaks = c(5, 18.5, 25, 30, 80), right = FALSE))
+
+ftable(xtabs(~ age_cat + bmi_band, data = zigong_binned))
+
+```
+
+Each of the five small-multiples charts is conditioned on a categorical, binary, or binned continuous variable to display a contrast between subsets of the cohort. Conditioning variables were not chosen at random but screened against a set of criteria -
+
+1.  **Completeness:** Variables with a large amount of missing data cannot provide a representative distribution of the cohort and were not selected. This excluded the echocardiographic measures including LVEF and E/A ratio (each missing for over two-thirds of patients) as well as high-sensitivity C-reactive protein (over half).
+
+2.  **Separation:** a conditioning variable and a displayed variable were only paired if the distribution shown differed meaningfully across the conditioning variable's level and added something beyond the single-variable distribution prior to subsetting. Some conditioning variables such as admission pathway and length of stay were flat against everything tested and were dropped entirely. In other cases, the conditioning variable was retained but a particular candidate variable to contrast was dropped as it did not show clear separation (for instance, the lipid measures showed no gradient across BMI bands).
+
+3.  **Class imbalance:** Variables whose groups were too unequal in size to provide a useful comparison were also excluded. Notably, prior admissions (93% of patients are first admissions), Glasgow Coma Scale (97% of patients with a score of 15), and six-month mortality (only 57 deaths) would have produced charts that are largely dominated by a single group.
+
+```{r bnp-nyha}
+
+# BNP faceted by NYHA class
+bnp_nyha <- zigong_clean %>%
+  ggplot(aes(x = brain_natriuretic_peptide)) +
+  geom_histogram(bins = 30, fill = "darkgreen", colour = "white") +
+  scale_x_log10() +
+  facet_wrap(~ nyha_cardiac_function_classification, ncol = 1, scales = "free_y") +
+  labs(title = "Chart 1: BNP distribution across NYHA cardiac function class",
+       x = "BNP (pg/mL, log10 scale)", y = "Number of patients")
+
+# Convert to interactive version
+ggplotly(bnp_nyha, tooltip = "y")
+```
+
+This chart conditions the distribution of BNP on NYHA class. BNP is heavily right-skewed so it is plotted on a log10 x-axis and excludes 35 rows with missing values. The facets are stacked vertically (`ncol = 1`) so that severity can be read from top to bottom. `scales = "free_y"` is used so that the shape of each class's distribution stays comparable despite the group sizes being unequal, which would otherwise flatten the smaller classes. This chart is finally rendered interactively using `plotly`, allowing readers to hover over a bar to see the exact patient count for that bin.
+
+The distribution shifts steadily towards higher BNP as NYHA class increases. In class II, values are spread widely and extend below 100 pg/mL, with the peak under 1000 pg/mL. In class III, there are fewer low values and the peak shifts closer to 1000 pg/mL. In class IV, few values fall below 100 pg/mL and the distribution seems to be concentrated above 1000 pg/mL. This rightward shift also corresponds to a rising median BNP of approximately 530, 694 and 1130 pg/mL across the three classes.
+
+```{r comorbidity-readmission}
+
+# Reshape comorbidity flags to long form
+comorbid_long <- zigong_clean %>%
+  select(re_admission_within_28_days, diabetes, moderate_to_severe_chronic_kidney_disease,
+         chronic_obstructive_pulmonary_disease) %>%
+  pivot_longer(
+    cols = c(diabetes, moderate_to_severe_chronic_kidney_disease,
+             chronic_obstructive_pulmonary_disease),
+    names_to = "diagnosis", values_to = "present"
+  )
+
+# Compute prevalence % within each 28-day readmission group
+comorbid_prevalence <- comorbid_long %>%
+  group_by(diagnosis, re_admission_within_28_days) %>%
+  summarise(prevalence = mean(present, na.rm = TRUE) * 100) %>%
+  mutate(
+    diagnosis = factor(diagnosis,
+                       levels = c("diabetes", "moderate_to_severe_chronic_kidney_disease",
+                                  "chronic_obstructive_pulmonary_disease"),
+                       labels = c("Diabetes", "CKD", "COPD")),
+    readmitted = factor(re_admission_within_28_days, levels = c(0, 1), labels = c("No", "Yes"))
+  )
+
+# Plot prevalence by 28-day readmission
+comorbid_prevalence %>%
+  ggplot(aes(x = readmitted, y = prevalence, fill = readmitted)) +
+  geom_col() +
+  facet_wrap(~ diagnosis) +
+  labs(title = "Chart 2: Comorbidity prevalence by 28-day readmission status",
+       x = "Readmitted within 28 days", y = "Prevalence (%)") +
+  theme(legend.position = "none")
+```
+
+This chart contrasts the prevalence of three comorbid diagnoses — diabetes, chronic kidney disease (CKD) and chronic obstructive pulmonary disease (COPD) — between patients who were and were not readmitted to hospital within 28 days. Considering that the three comorbidities are stored as separate binary columns, the data is first reshaped from wide to long form using `pivot_longer()` so the three can be faceted side by side. Although the two groups are very unequal in size (1868 not readmitted versus 140 readmitted), prevalence (%) rather than raw counts is used. As rates are not distorted by group size in the way a raw count would be, the groups are still directly comparable. Prevalence is calculated as the mean of the 0/1 indicator multiplied by 100. 2 patients with missing CKD status were excluded from that prevalence calculation. The diagnosis and readmission columns are also converted to factors to give readable facet and axis labels (No/Yes) for the plot.
+
+The chart shows a clear difference for diabetes and CKD. Both diagnoses are markedly more prevalent among readmitted patients (rising from 22.4% to 33.6% for diabetes and from 23.0% to 32.1% for CKD). On the other hand, COPD is roughly level between the two groups (11.5% versus 12.9%) and shows little association with readmission.
+
+These three individual comorbidities were intentionally plotted over a composite score such as the CCI. While the CCI provides a single value representing overall comorbidity burden, it is essentially flat across readmission status (median = 2 for both groups). Examining three of its component conditions instead shows that the prevalence of specific diagnoses does differ between the readmitted and non-readmitted groups even when the total score does not. This demonstrates that an aggregate measure can often mask a difference that only becomes apparent when its components are examined individually.
+
+```{r sbp-killip}
+
+# Systolic blood pressure distribution faceted by Killip grade.
+zigong_clean %>%
+  filter(systolic_blood_pressure > 0) %>%
+  ggplot(aes(x = systolic_blood_pressure)) +
+  geom_histogram(binwidth = 10, fill = "darkgreen", colour = "white") +
+  facet_wrap(~ killip_grade, ncol = 1, scales = "free_y") +
+  labs(title = "Chart 3: Systolic blood pressure across Killip grade",
+       x = "Systolic blood pressure (mmHg)", y = "Number of patients")
+```
+
+This chart conditions the distribution of SBP at admission on Killip grade. Unlike NYHA class, which indicates chronic functional severity, the Killip grade (I–IV) indicates the acute severity of the presentation at the time of admission. Three rows with an SBP of 0 mmHg are filtered out prior to plotting as this value is physiologically impossible. Similar to the first small-multiples chart, the facets are stacked vertically `(ncol = 1)` so that severity can be read top to bottom, and `scales = "free_y"` is used because grade IV has a relatively small sample (n=60) compared to the other grades. This chart is presented as a static plot rather than an interactive one as the drop at grade IV is clearly visible without needing to know the individual counts.
+
+The chart shows that SBP is broadly similar across grades I to III. Each of their distributions is roughly symmetric and centred around a median of \~130 mmHg. However, grade IV differs sharply from the rest. Its distribution is much lower, concentrating around a median of 90 mmHg with few patients above it, and indicates substantially lower blood pressure in the most acute presentations. While grade IV's distribution is noisier than the others as it only contains 60 patients, its contrast with the other grades is large enough to remain clearly visible.
+
+```{r bnp-bmi}
+
+# BNP faceted by BMI bins
+p_bnp_bmi <- zigong_clean %>%
+  filter(bmi >= 5, bmi <= 80) %>%
+  mutate(bmi_band = cut(bmi,
+                        breaks = c(5, 18.5, 25, 30, 80),
+                        labels = c("Underweight", "Normal", "Overweight", "Obese"),
+                        right = FALSE)) %>%
+  ggplot(aes(x = brain_natriuretic_peptide)) +
+  geom_histogram(bins = 30, fill = "darkgreen", colour = "white") +
+  scale_x_log10() +
+  facet_wrap(~ bmi_band, ncol = 1, scales = "free_y") +
+  labs(title = "Chart 4: BNP distribution across BMI bands",
+       x = "BNP (pg/mL, log10 scale)", y = "Number of patients")
+
+# Convert to interactive verson
+ggplotly(p_bnp_bmi, tooltip = "y")
+
+
+```
+
+The conditioning variable in this plot is constructed by binning the continuous variable BMI. This is done by dividing it into four bands using `cut()`, with cut points at 18.5, 25 and 30. These represent the standard weight-status categories as defined by the World Health Organisation (WHO, n.d.). The argument `right = FALSE` makes each interval left-closed so that a value falling exactly on a boundary (for instance, a BMI of 18.5) is assigned to the higher band ('Normal') rather than the lower one ('Underweight'). Eight physiologically impossible BMI values are filtered out by restricting the range to 5–80 before binning. The distribution variable BNP is once again plotted on a log10 x-axis using vertically stacked facets and `scales = "free_y"` to account for the unequal sample size across groups (for example, 1184 patients in 'Normal' compared to 66 in 'Obese'). A further 35 rows with missing BNP values are excluded as well. This chart is also rendered interactively using `plotly`, so hovering over a bar shows the exact patient count for that bin.
+
+The chart shows the BNP distribution shifts steadily towards lower values as BMI increases. In the 'Underweight' band, values are spread widely and extend well past 1000 pg/mL. On the other hand, in the 'Obese' band the distribution is concentrated lower, with most patients below 1000 pg/mL. This steady leftward shift is also reflected in the falling median BNP across the four bands (approximately 846, 799, 524 and 479 pg/mL from 'Underweight' through 'Obese'). The chart shows a structural feature of the cohort as well. The higher-BMI facets ('Overweight' and 'Obese') are much sparser than the 'Underweight' and 'Normal' bands, reflecting how lean this patient cohort is overall. This is relevant to the paper's aim of comparing this cohort with heart-failure populations in other locations, which are typically weighted towards higher BMI (Reddy et al., 2017).
+
+```{r gfr-trop}
+
+# Baseline measures by 6-month readmission
+readmit <- zigong_clean %>%
+  mutate(readmitted = factor(re_admission_within_6_months,
+                             levels = c(0, 1), labels = c("No", "Yes")))
+
+# Renal function (GFR)
+gfr_data <- readmit %>%
+  ggplot(aes(x = readmitted, y = glomerular_filtration_rate)) +
+  geom_violin(fill = "darkgreen") +
+  geom_boxplot(width = 0.1) +
+  labs(title = "Renal Function", x = "Readmitted (6 mo)", y = "GFR (mL/min/1.73m²)")
+
+# Cardiac marker (hs-Troponin)
+trop_data <- readmit %>%
+  filter(high_sensitivity_troponin > 0) %>%
+  ggplot(aes(x = readmitted, y = high_sensitivity_troponin)) +
+  geom_violin(fill = "darkgreen") +
+  geom_boxplot(width = 0.1) +
+  scale_y_log10() +
+  labs(title = "Cardiac Marker", x = "Readmitted (6 mo)", y = "hs-Troponin (pg/mL, log10)")
+
+# Combine the two panels
+gfr_data + trop_data +
+  plot_annotation(title = "Chart 5: Renal function and cardiac marker by 6-month readmission")
+```
+
+This figure shows two baseline measurements against 6-month readmission status - glomerular filtration rate (GFR) in one panel and high-sensitivity troponin in the other. The conditioning variable is the 6-month readmission flag that is converted to a labelled factor (No/Yes). The six-month window is used in preference to the 28-day one because its two groups are more evenly balanced (1235 versus 773), whereas the 28-day flag is heavily imbalanced (1868 versus 140) and would make the two distributions difficult to compare. Each measure is drawn as a violin plot with a narrow box plot inside it, which shows the quartile summary as well as the shape of the distribution. This is useful here because both measures are skewed, and a plain box plot would not reveal whether two groups with different medians also differ in the shape of their tails. Troponin in particular is heavily right-skewed, so it is drawn on a log10 scale. The two panels are combined with patchwork and use `plot_annotation()` to add the overall title. The GFR panel excludes 63 patients with missing values and the troponin panel excludes a further 79 missing values. Troponin also has 51 zero values, which are biologically implausible and are filtered out.
+
+In the renal panel, GFR is lower among readmitted patients, with the median falling from around 69 in the non-readmitted group to 58 mL/min/1.73m² in the readmitted one. The distribution shifts slightly downwards in the readmitted group but the shape is mostly similar across both, demonstrating a concentration at lower GFR and a long upper tail. In the cardiac panel, troponin is higher among readmitted patients, with the median rising from about 0.049 to 0.061 pg/mL. The overall spread of the two groups looks broadly similar and they both seem to have long upper tails.
+
+Taken together, patients readmitted within six months tend to have both lower renal function and higher troponin than those who were not, though the GFR difference is clearer than the more subtle troponin one.
+
+## Contrasts: Discussion
+
+#### Conceptual problems
+
+**Selection bias in the charts shown.** These five charts were chosen because they display a clear contrast. Candidate variables were screened for completeness, separation across classes, and class balance, and consequently incomplete, flat, or imbalanced variables were excluded. These five plots therefore specifically represent some of the strongest observed relationships in the data. Readers should not infer that the variables not shown are unimportant simply because they did not produce a clear visual contrast.
+
+**Lack of statistical testing.** Similarly, because this is an exploratory analysis rather than a proper inference check, no significance testing was done and none of these contrasts should be read as established clinical relationships. Screening many variables and selectively choosing the ones that naturally separate also means some of the observed contrasts could have arisen due to chance. Hence, the charts should only be considered as descriptive visualisations and should not be over-interpreted as they cannot confirm or deny any relationships without proper statistical analysis.
+
+**Two readmission windows.** Chart 2 conditions on 28-day readmission and Chart 5 conditions on 6-month readmission. This choice was deliberate to match each chart's needs. Chart 5 required adequate numbers in both groups as it plots full distributions, so the more balanced 6-month flag was used there. Chart 2 plots prevalence, which is a rate and therefore remains comparable even across the unequal group sizes of the 28-day window. While Chart 2 could have used either window, the 28-day window was chosen so that both early and longer-term readmission are represented in the report. However, the consequence is that the two charts are not directly comparable as they describe different outcomes.
+
+**Single-cohort limitation**. All patients come from one hospital in Sichuan, China. Hence, the patterns shown here are specific to this cohort and may not generalise to other populations. This limits any cross-cohort comparison using this dataset.
+
+#### Implementation issues
+
+**Group-size imbalance and free_y.** Several charts condition on variables with unequal group sizes and thus `scales = "free_y"` was used to keep each group's shape comparable with each other. However, this removes the absolute frequencies and makes it difficult to judge how many patients are in each facet. Additionally, the facets with small samples are also inherently noisier as their shapes rely on points from only a few patients.
+
+**Excluded values.** Some charts drop rows as they use a log scale or a range filter. These exclusions are individually small but result in each chart describing a slightly different cohort subset rather than all 2,008 patients. Results are therefore not easily comparable across charts.
+
+**Log scales.** Some charts use a log10 scale to accommodate heavily skewed variables (BNP, troponin). While this makes the distributions more readable, it is less intuitive for a reader as equal distances on the axis represent multiplicative rather than additive differences. In Chart 5 in particular, the log scale needed for troponin's skew visually compresses the difference between the readmission groups, and consequently the difference in medians appears weaker visually than it actually is.
+
+**Heatmaps.** Heatmaps could have been used to show an interaction between two binned or categorical variables. However, this cohort appeared heavily concentrated in the variables that were examined (for instance, most patients are elderly and of normal-to-low BMI) and so a two-way grid would place a large number of patients in a few cells while leaving many others with only single-digit or zero counts. A heatmap that shows rates would consequently include unreliable estimates from these very small cells (for example, a readmission rate based on one or two patients) alongside reliable ones. It would therefore risk displaying noise rather than actual signal.
+
+#### Improvements
+
+Several improvements could be made to strengthen these charts.
+
+1.  The faceted histograms could include a reference line at each facet's median. This would help make the shifts across facets more visually clear.
+2.  Adding a small constant before log-transforming would let the graphs retain the zero-value troponin readings rather than dropping them entirely. This might slightly distort the lower end of the scale but would at least ensure that the graphs are built using the entire dataset.
+3.  Each facet could have been annotated with its group size (n) to show how many patients are contained in each group. This is currently a bit unclear due to the use of "free_y".
+4.  Statistical tests could also have been conducted to complement the visualisations. This provides greater weight to the observed differences and would help demonstrate whether the contrasts are actually statistically significant.
+5.  The interactive charts currently show only the patient count when one hovers over it. The default tooltip also displayed the x-position in log10 units rather than the actual BNP value, which is not very interpretable and so it was suppressed. A custom tooltip could instead display the BNP value in its original pg/mL units alongside the count.
+
+## References
+
+Reddy YNV, et al. The obese heart failure with preserved ejection fraction phenotype. *Circulation.* 2017. <https://www.ahajournals.org/doi/10.1161/circulationaha.117.028365>
+
+World Health Organization (n.d.). Body mass index (BMI). Global Health Observatory. <https://www.who.int/data/gho/data/themes/topics/topic-details/GHO/body-mass-index>
+
+**Documentation**
+
+- readr — <https://readr.tidyverse.org/reference/read_csv.html>
+
+- janitor — <https://sfirke.github.io/janitor/reference/clean_names.html>
+
+- tidyr — <https://tidyr.tidyverse.org/reference/pivot_longer.html>
+
+- ggplot2 — <https://ggplot2.tidyverse.org/reference/>
+
+- patchwork — <https://patchwork.data-imaginist.com/reference/plot_annotation.html>
+
+- plotly — <https://plotly.com/ggplot2/getting-started/>
+
+- tibble — <https://tibble.tidyverse.org/reference/tribble.html>
+
+- naniar — <https://naniar.njtierney.com/reference/gg_miss_var.html>
+
+- R documentation —
+
+  - <https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/ftable>
+
+  - <https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/xtabs>
+
+  - <https://www.rdocumentation.org/packages/poorman/versions/0.2.6/topics/across>
